@@ -1,0 +1,548 @@
+###
+#
+# This tool provides the following operations:
+#   1. Defined classes name
+#   2. Defined function name
+#   3. Called classes name
+#   4. Called function name
+#   5. Remove comments
+#   6. Variables
+#
+###
+import os
+import ast
+import sys
+import astor
+import ConfigParser
+
+
+def get_name(item):
+    if isinstance(item, ast.Name):
+        return item.id
+    elif hasattr(item, 'value'):
+        return get_name(item.value)
+    else:
+        return None
+
+class Modifier(ast.NodeTransformer):
+   
+    def __init__(
+        self,
+        names,
+        name_in_module,
+        name_type_def,
+        imported,
+        skip_obf_fun_method,
+        in_file
+    ):
+        self.names = names
+        self.name_in_module = name_in_module
+        self.name_type_def = name_type_def
+        self.imported = imported
+        self.skip_obf_fun_method = skip_obf_fun_method
+        self.in_def = ''
+        self.in_def_stack = []
+        self.in_file = in_file
+        super(Modifier, self).__init__()
+
+    def _modify_func_args(self, args):
+        for arg in args:
+            if isinstance(arg, ast.Name):
+                self._modify_name(arg, 'arg')
+
+    def _modify_item(self, item, t=None):
+        if isinstance(item, ast.Name):
+            self._modify_name(item, t)
+        elif isinstance(item, ast.Attribute):
+            self._modify_attr(item, t)
+        elif isinstance(item, ast.BinOp):
+            self._modify_item(item.left, t)
+            self._modify_item(item.right, t)
+        elif isinstance(item, ast.Call):
+            self._modify_call(item)
+        elif isinstance(item, ast.Compare):
+            self._modify_item(item.left, t)
+            for comparator in item.comparators:
+                self._modify_item(comparator)
+        elif isinstance(item, ast.comprehension):
+            self._modify_item(item.target)
+            self._modify_item(item.iter)
+        elif isinstance(item, ast.Dict):
+            for key in item.keys:
+                self._modify_item(key)
+
+            for value in item.values:
+                self._modify_item(value)
+        elif isinstance(item, ast.ExtSlice):
+            for dim in item.dims:
+                self._modify_item(dim)
+        elif isinstance(item, ast.Index):
+            self._modify_item(item.value)
+        elif isinstance(item, ast.List):
+            for elt in item.elts:
+                self._modify_item(elt)
+        elif isinstance(item, ast.ListComp):
+            self._modify_item(item.elt, t)
+            for gen in item.generators:
+                self._modify_item(gen, t)
+        elif isinstance(item, ast.Tuple):
+            for elt in item.elts:
+                self._modify_item(elt, t)
+        elif isinstance(item, ast.Slice):
+            self._modify_item(item.lower, t)
+            self._modify_item(item.upper, t)
+        elif isinstance(item, ast.Subscript):
+            self._modify_item(item.value)
+            self._modify_item(item.slice)
+        elif isinstance(item, ast.UnaryOp):
+            self._modify_item(item.operand)
+
+    def _modify_attr_attr(self, func_name, attr):
+        if (
+            func_name in self.skip_obf_fun_method and \
+            self.in_def in self.skip_obf_fun_method[func_name]
+        ):
+            # We only obfuscate the attr field of an Attribute of that function
+            # which is not in the skipping list.
+            return None
+
+        if (
+            attr.attr in self.name_type_def and \
+            (
+                'attr' in self.name_type_def[attr.attr] or \
+                'func' in self.name_type_def[attr.attr]
+            )
+        ):
+            attr.attr = self.name_type_def[attr.attr]['obf']
+
+    def _modify_attr(self, attr, t=None):
+        attr_name = get_name(attr)
+        if isinstance(attr.value, ast.Name):
+            if attr.value.id in self.imported[self.in_file]:
+                return None
+
+            if attr_name != "self":
+                self._modify_item(attr.value, t)
+
+            self._modify_attr_attr(attr_name, attr)
+        else:
+            self._modify_attr_attr(attr_name, attr)
+            self._modify_item(attr.value, t)
+        
+    def _modify_call(self, node):
+        self._modify_item(node.func)
+        self._modify_call_args(node.args)
+        self._modify_call_keywords(node.keywords)
+
+    def _modify_call_args(self, args):
+        for arg in args:
+            self._modify_item(arg, 'var')
+            self._modify_item(arg, 'arg')
+            self._modify_item(arg, 'func')
+
+    def _modify_call_keywords(self, keywords):
+        for keyword in keywords:
+            self._modify_item(keyword.value)
+
+    def _modify_name(self, name, t):
+        if not isinstance(name, ast.Name):
+            return None
+
+        if t is None:
+            t = 'var'
+
+        if name.id in self.imported[self.in_file]:
+            # We don't obfuscate the imported/outside module which is not in our
+            # project path.
+            return None
+
+        if name.id in self.name_type_def:
+            print("_modify_name: %s (%s) [%s]" % (name.id, self.in_def, t))
+            if (
+                ('var' in self.name_type_def[name.id]) or \
+                (
+                    'arg' in self.name_type_def[name.id] and \
+                    self.in_def in self.name_type_def[name.id]['arg']
+                ) or \
+                ('func' in self.name_type_def[name.id]) or \
+                ('class' in self.name_type_def[name.id])
+            ):
+                name.id = self.name_type_def[name.id]['obf']
+            print ("after _modify_name: %s" % name.id)
+
+    def visit_Assign(self, node):
+        print("[modifier] assign: %s" % ast.dump(node))
+        for target in node.targets:
+            self._modify_item(target, 'var')
+
+        self._modify_item(node.value)
+        return node
+
+    def visit_AugAssign(self, node):
+        print("[modifier] augassign: %s" % ast.dump(node))
+        self._modify_item(node.target)
+        self._modify_item(node.value)
+        return node
+
+    def visit_Call(self, node):
+        def _get_func_name(func):
+            if isinstance(func, ast.Name):
+                return func.id
+            elif hasattr(func, 'value'):
+                return _get_func_name(func.value)
+
+            return None
+
+        print("[modifier] call: %s" % ast.dump(node))
+        self._modify_call(node)
+        print("[modifier] after: %s" % ast.dump(node))
+        return node
+
+    def visit_ClassDef(self, node):
+        print("[modifier] class: %s" % node.name)
+        self.in_def = node.name
+        if node.name in self.name_type_def:
+            node.name = self.name_type_def[node.name]['obf']
+
+        self.generic_visit(node)
+        return node
+
+    def visit_Expr(self, node):
+        """
+        Drop comments
+        """
+        print("[modifier] expr: %s" % ast.dump(node))
+        if isinstance(node.value, ast.Str):
+            return None
+        else:
+            self.generic_visit(node)
+            return node
+
+    def visit_FunctionDef(self, node):
+        print("[modifier] func: %s" % ast.dump(node))
+        self.in_def_stack.append(self.in_def)
+        self.in_def = node.name
+        if (
+            node.name in self.name_type_def and \
+            node.name in self.name_type_def[node.name]['func']
+        ):
+            node.name = self.name_type_def[node.name]['obf']
+
+        self._modify_func_args(node.args.args)
+        self.generic_visit(node)
+        return node
+
+    def visit_For(self, node):
+        print("[modifier] for: %s" % ast.dump(node))
+        self._modify_item(node.target)
+        self._modify_item(node.iter)
+        self.generic_visit(node)
+        return node
+
+    def visit_If(self, node):
+        print("[modifier] if: %s" % ast.dump(node))
+        if isinstance(node.test, ast.Compare):
+            self._modify_item(node.test.left)
+        elif isinstance(node.test, ast.UnaryOp):
+            self._modify_item(node.test.operand)
+        elif isinstance(node.test, ast.BoolOp):
+            for value in node.test.values:
+                self._modify_item(value)
+        else:
+            self._modify_item(node.test)
+
+        self.generic_visit(node)
+        return node
+
+    def visit_Print(self, node):
+        print("[modifier] print: %s" % ast.dump(node))
+        for value in node.values:
+            self._modify_item(value)
+
+        return node
+
+    def visit_Return(self, node):
+        print("[modifier] return: %s" % ast.dump(node))
+        self._modify_item(node.value)
+        self.in_def = self.in_def_stack.pop()
+        return node
+
+    def visit_While(self, node):
+        print("[modifier] while: %s" % ast.dump(node))
+        for value in node.test.values:
+            self._modify_item(value)
+
+        self.generic_visit(node)
+        return node
+
+class Obfuscator:
+    """
+    This class is a obfuscator for classes, functions, and variables.
+    Methods:
+        - load_file: giving the path of a python file. The class, function and
+          variable names of this file will be retrieved. Duplicated names in
+          different files will be record only once.
+        - obfuscate:
+    """
+
+    def __init__(self, base_dir):
+        self.base_dir = base_dir + "/"
+        self.names = {}
+        self.imported = {}
+        self.skip_obf_fun_method = {}
+        self.name_in_module = {}
+
+        # name_type_def: {
+        #     "FILE": {
+        #         "NAME": {
+        #             "TYPE": ["IN_DEF"],
+        #             "obf": ''
+        #         }, {...}
+        #     }, {...}
+        # }
+        self.name_type_def = {}
+        self.config = self._get_config()
+
+    def _append_dict(self, target, source):
+        for item in source:
+            target[item] = ''
+
+    def _get_config(self):
+        default_config = "obfuscator.config"
+        config_parser = ConfigParser.RawConfigParser()
+        config_parser.read(default_config)
+        config = {}
+        config_items = [
+            "skip_file", "skip_class", "skip_function", "skip_variable"
+        ]
+        for item in config_items:
+            config[item] = config_parser.get("obfuscator", item).split(",")
+        
+        return config
+
+    def load_file(self, filepath):
+        if filepath.replace(self.base_dir, '') in self.config["skip_file"]:
+            return None
+
+        f = open(filepath, "r")
+        content = f.read()
+        f.close()
+        if len(content) == 0:
+            return None
+
+        node = ast.parse(content)
+        #print ast.dump(node)
+        v = Parser(self.config)
+        v.visit(node)
+        self._append_dict(self.names, v.names)
+        tmp = {}
+        self._append_dict(tmp, v.imported)
+        self.imported[filepath] = tmp
+        for name in v.skip_obf_fun_method:
+            if name in self.skip_obf_fun_method:
+                for fun in v.skip_obf_fun_method[name]:
+                    self.skip_obf_fun_method[name] = fun
+            else:
+                self.skip_obf_fun_method[name] = v.skip_obf_fun_method[name]
+
+        self.name_in_module[filepath] = v.names
+        self.name_type_def[filepath] = v.name_type_def
+
+    def _get_names_maxlen(self, name_type_def):
+        max_len = 0
+        for f in name_type_def:
+            max_len += len(name_type_def[f])
+
+        return max_len
+
+    def obfuscate(self):
+        idx = 1
+        max_len = self._get_names_maxlen(self.name_type_def)
+        print max_len
+        bin_len = len(format(max_len, "b"))
+        for f in self.name_type_def:
+            for name in self.name_type_def[f]:
+                self.name_type_def[f][name]['obf'] = format(
+                    idx, "0%db" % (bin_len))
+                self.name_type_def[f][name]['obf'] = \
+                    self.name_type_def[f][name]['obf']\
+                    .replace("1", "l")\
+                    .replace("0", "i")
+                idx += 1
+
+    def modify_file(self, filepath):
+        print("modify_file: %s (%s)" % (self.imported, filepath))
+        if filepath.replace(self.base_dir, '') in self.config["skip_file"]:
+            return None
+
+        f = open(filepath, "r")
+        content = f.read()
+        f.close()
+        if len(content) == 0:
+            return None
+
+        node = ast.parse(content)
+        #print ast.dump(node)
+        m = Modifier(
+            self.names,
+            self.name_in_module[filepath],
+            self.name_type_def[filepath],
+            self.imported,
+            self.skip_obf_fun_method,
+            filepath
+        )
+        mnode = m.visit(node)
+        f = open(filepath + ".obf", "w")
+        content = astor.to_source(mnode)
+        f.write(content)
+        f.close()
+
+
+class Parser(ast.NodeVisitor):
+    """
+    This is an AST visitor to parse a given ast node and retrieve classes,
+    functions and variables.
+    """
+    
+    def __init__(self, config):
+        self.names = []
+        self.imported = []
+        self.config = config
+        self.in_def = ''
+        self.in_def_stack = []
+        self.skip_obf_fun_method = {}
+        self.name_type_def = {}
+        super(Parser, self).__init__()
+
+    def _add_name(self, name, t):
+        if self._skip_name(name, t):
+            return None
+
+        if name not in self.name_type_def:
+            self.name_type_def[name] = {}
+
+        if t not in self.name_type_def[name]:
+            self.name_type_def[name][t] = []
+
+        self.name_type_def[name][t].append(self.in_def)
+        self.name_type_def[name]['obf'] = ''
+
+    def _skip_name(self, name, t):
+        if t == 'var' and name in self.config['skip_variable']:
+            return True
+
+        return False
+    
+    def _get_args(self, args):
+        for arg in args:
+            if isinstance(arg, ast.Name):
+                if arg.id != 'self':
+                    self._add_name(arg.id, 'arg')
+
+    def _get_import_names(self, names):
+        for name in names:
+            if name.asname is None:
+                self.imported.append(name.name)
+            else:
+                self.imported.append(name.asname)
+
+    def _get_assign_name(self, target):
+        if isinstance(target, ast.Name):
+            self._add_name(target.id, 'var')
+        elif isinstance(target, ast.Tuple):
+            for elt in target.elts:
+                self._get_assign_name(elt)
+        elif isinstance(target, ast.Attribute):
+            self._get_assign_name(target.value)
+            if get_name(target.value) == "self":
+                self._add_name(target.attr, 'attr')
+        elif hasattr(target, 'value'):
+            self._get_assign_name(target.value)
+
+    def _get_fun_name(self, func):
+        if isinstance(func, ast.Attribute):
+            return self._get_fun_name(func.value)
+        elif isinstance(func, ast.Name):
+            return func.id
+
+    def generic_visit(self, node):
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_Assign(self, node):
+        print("visit assign: %s" % ast.dump(node))
+        for target in node.targets:
+            self._get_assign_name(target)
+
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_ClassDef(self, node):
+        self.in_def_stack.append(node.name)
+        self.in_def = node.name
+        if node.name not in self.config['skip_class']:
+            self._add_name(node.name, 'class')
+
+        ast.NodeVisitor.generic_visit(self, node)
+        self.in_def = self.in_def_stack.pop()
+
+    def visit_For(self, node):
+        print("visit for: %s" % ast.dump(node))
+        self._get_assign_name(node.target)
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_FunctionDef(self, node):
+        self.in_def_stack.append(node.name)
+        self.in_def = node.name
+        if (
+            not node.name.startswith("__") and \
+            node.name not in self.config['skip_function']
+        ):
+            self._add_name(node.name, 'func')
+
+        self._get_args(node.args.args)
+        ast.NodeVisitor.generic_visit(self, node)
+        self.in_def = self.in_def_stack.pop()
+
+    def visit_Import(self, node):
+        print("[parser] visit import: %s" % ast.dump(node))
+        self._get_import_names(node.names)
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_ImportFrom(self, node):
+        print("[parser] visit from: %s" % ast.dump(node))
+        self._get_import_names(node.names)
+        ast.NodeVisitor.generic_visit(self, node)
+
+    def visit_Return(self, node):
+        print("[parser] visit return: %s" % ast.dump(node))
+        ast.NodeVisitor.generic_visit(self, node)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) <= 1:
+        print("Usage: python obfuscator.py PROJECT_PATH")
+        sys.exit(0)
+
+    obf = Obfuscator(sys.argv[1])
+    for dirPath, dirNames, fileNames in os.walk(sys.argv[1]):
+        for f in fileNames:
+            fn, ext_fn = os.path.splitext(f)
+            if ext_fn == ".py":
+                filepath = os.path.join(dirPath, f)
+                obf.load_file(filepath)
+
+    obf.obfuscate()
+    #print obf.classes
+    #print obf.functions
+    print "names"
+    print obf.names
+    print "name_type_def"
+    print obf.name_type_def
+    print "imported"
+    print obf.imported
+    print "skip_obf_fun_method"
+    print obf.skip_obf_fun_method
+    for dirPath, dirNames, fileNames in os.walk(sys.argv[1]):
+        for f in fileNames:
+            fn, ext_fn = os.path.splitext(f)
+            if ext_fn == ".py":
+                obf.modify_file(os.path.join(dirPath, f))
