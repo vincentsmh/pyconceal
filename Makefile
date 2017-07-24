@@ -8,5 +8,5 @@ build:
 dist/obfuscator:
 	make build
 
-release: dist/obfuscator
-	bash release.sh
+release: dist/obfuscator doc/README
+	@bash release.sh

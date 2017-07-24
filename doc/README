@@ -1,0 +1,20 @@
+
+
+How to Use
+==========
+
+Assume your python source codes are located in /path/your/codes
+Go into the pyconceal folder and do
+
+  $ ./obfuscator /path/your/codes > log
+
+
+Configuration
+=============
+
+'obfuscator.config' in pyconceal is the configuration file which allowes you to
+skip obfuscation on some names. In current version, pyconceal supports:
+
+  - skip_class
+  - skip_function
+  - skip_variable
