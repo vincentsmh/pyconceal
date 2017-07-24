@@ -10,3 +10,4 @@ release_folder="pyconceal-${version}"
 rm -rf ${release_folder}
 mkdir -p ${release_folder}
 cp obfuscator.config dist/obfuscator doc/README ${release_folder}/
+tar zcvf ${release_folder}.tar.gz ${release_folder}
