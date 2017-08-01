@@ -1,9 +1,12 @@
 
-.phony: buld release
+.phony: buld clean release
 
 build:
 	rm -rf build dist
 	pyinstaller --onefile obfuscator.py
+
+clean:
+	@rm -rf pyconceal-*
 
 dist/obfuscator:
 	make build
