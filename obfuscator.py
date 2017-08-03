@@ -389,7 +389,7 @@ class Obfuscator:
             filepath
         )
         mnode = m.visit(node)
-        f = open(filepath + ".obf", "w")
+        f = open(filepath, "w")
         content = astor.to_source(mnode)
         f.write(content)
         f.close()
@@ -546,6 +546,8 @@ if __name__ == '__main__':
         obf.modify_file(obf_path)
     else:
         for dirPath, dirNames, fileNames in os.walk(obf_path):
+            print dirPath
+            print dirNames
             for f in fileNames:
                 fn, ext_fn = os.path.splitext(f)
                 if ext_fn == ".py":
