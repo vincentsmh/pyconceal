@@ -230,6 +230,7 @@ class Modifier(ast.NodeTransformer):
 
         self._modify_func_args(node.args.args)
         self.generic_visit(node)
+        self.in_def = self.in_def_stack.pop()
         return node
 
     def visit_For(self, node):
@@ -264,7 +265,6 @@ class Modifier(ast.NodeTransformer):
     def visit_Return(self, node):
         print("[modifier] return: %s" % ast.dump(node))
         self._modify_item(node.value)
-        self.in_def = self.in_def_stack.pop()
         return node
 
     def visit_While(self, node):
