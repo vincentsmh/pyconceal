@@ -108,10 +108,7 @@ class Modifier(ast.NodeTransformer):
 
         if (
             attr.attr in self.name_type_def and \
-            (
-                'attr' in self.name_type_def[attr.attr] or \
-                'func' in self.name_type_def[attr.attr]
-            )
+            'attr' in self.name_type_def[attr.attr]
         ):
             attr.attr = self.name_type_def[attr.attr]['obf']
 
@@ -130,7 +127,7 @@ class Modifier(ast.NodeTransformer):
             self._modify_item(attr.value, t)
         
     def _modify_call(self, node):
-        self._modify_item(node.func)
+        self._modify_item(node.func, 'func')
         self._modify_call_args(node.args)
         self._modify_call_keywords(node.keywords)
 
