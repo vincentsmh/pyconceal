@@ -519,16 +519,20 @@ class Parser(ast.NodeVisitor):
 
 if __name__ == '__main__':
     if len(sys.argv) <= 1:
-        print("Usage: python obfuscator.py PROJECT_PATH")
+        print("Usage: python obfuscator.py [PROJECT_PATH | PYTHON_FILE]")
         sys.exit(0)
 
-    obf = Obfuscator(sys.argv[1])
-    for dirPath, dirNames, fileNames in os.walk(sys.argv[1]):
-        for f in fileNames:
-            fn, ext_fn = os.path.splitext(f)
-            if ext_fn == ".py":
-                filepath = os.path.join(dirPath, f)
-                obf.load_file(filepath)
+    obf_path = sys.argv[1]
+    obf = Obfuscator(obf_path)
+    if os.path.isfile(obf_path):
+        obf.load_file(obf_path)
+    else:
+        for dirPath, dirNames, fileNames in os.walk(obf_path):
+            for f in fileNames:
+                fn, ext_fn = os.path.splitext(f)
+                if ext_fn == ".py":
+                    filepath = os.path.join(dirPath, f)
+                    obf.load_file(filepath)
 
     obf.obfuscate()
     #print obf.classes
@@ -541,8 +545,11 @@ if __name__ == '__main__':
     print obf.imported
     print "skip_obf_fun_method"
     print obf.skip_obf_fun_method
-    for dirPath, dirNames, fileNames in os.walk(sys.argv[1]):
-        for f in fileNames:
-            fn, ext_fn = os.path.splitext(f)
-            if ext_fn == ".py":
-                obf.modify_file(os.path.join(dirPath, f))
+    if os.path.isfile(obf_path):
+        obf.modify_file(obf_path)
+    else:
+        for dirPath, dirNames, fileNames in os.walk(obf_path):
+            for f in fileNames:
+                fn, ext_fn = os.path.splitext(f)
+                if ext_fn == ".py":
+                    obf.modify_file(os.path.join(dirPath, f))
