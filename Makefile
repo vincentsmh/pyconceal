@@ -8,7 +8,7 @@ build:
 	echo "\033[32mDone\033[0m"
 
 clean:
-	@rm -rf pyconceal-*
+	@rm -rf pyconceal-* build dist obfuscator.spec
 
 dist/obfuscator:
 	make build
