@@ -13,7 +13,15 @@ import os
 import ast
 import sys
 import astor
+import logging
 import ConfigParser
+
+log = logging.getLogger('myapp')
+hdlr = logging.FileHandler('obf_log')
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+hdlr.setFormatter(formatter)
+log.addHandler(hdlr) 
+log.setLevel(logging.DEBUG)
 
 
 def get_name(item):
@@ -23,6 +31,7 @@ def get_name(item):
         return get_name(item.value)
     else:
         return None
+
 
 class Modifier(ast.NodeTransformer):
    
@@ -154,7 +163,7 @@ class Modifier(ast.NodeTransformer):
             return None
 
         if name.id in self.name_type_def:
-            print("_modify_name: %s (%s) [%s]" % (name.id, self.in_def, t))
+            log.debug("_modify_name: %s (%s) [%s]" % (name.id, self.in_def, t))
             if (
                 ('var' in self.name_type_def[name.id]) or \
                 (
@@ -165,10 +174,10 @@ class Modifier(ast.NodeTransformer):
                 ('class' in self.name_type_def[name.id])
             ):
                 name.id = self.name_type_def[name.id]['obf']
-            print ("after _modify_name: %s" % name.id)
+            log.debug("after _modify_name: %s" % name.id)
 
     def visit_Assign(self, node):
-        print("[modifier] assign: %s" % ast.dump(node))
+        log.debug("[modifier] assign: %s" % ast.dump(node))
         for target in node.targets:
             self._modify_item(target, 'var')
 
@@ -176,7 +185,7 @@ class Modifier(ast.NodeTransformer):
         return node
 
     def visit_AugAssign(self, node):
-        print("[modifier] augassign: %s" % ast.dump(node))
+        log.debug("[modifier] augassign: %s" % ast.dump(node))
         self._modify_item(node.target)
         self._modify_item(node.value)
         return node
@@ -190,13 +199,13 @@ class Modifier(ast.NodeTransformer):
 
             return None
 
-        print("[modifier] call: %s" % ast.dump(node))
+        log.debug("[modifier] call: %s" % ast.dump(node))
         self._modify_call(node)
-        print("[modifier] after: %s" % ast.dump(node))
+        log.debug("[modifier] after: %s" % ast.dump(node))
         return node
 
     def visit_ClassDef(self, node):
-        print("[modifier] class: %s" % node.name)
+        log.debug("[modifier] class: %s" % node.name)
         self.in_def = node.name
         if node.name in self.name_type_def:
             node.name = self.name_type_def[node.name]['obf']
@@ -208,7 +217,7 @@ class Modifier(ast.NodeTransformer):
         """
         Drop comments
         """
-        print("[modifier] expr: %s" % ast.dump(node))
+        log.debug("[modifier] expr: %s" % ast.dump(node))
         if isinstance(node.value, ast.Str):
             return None
         else:
@@ -216,7 +225,7 @@ class Modifier(ast.NodeTransformer):
             return node
 
     def visit_FunctionDef(self, node):
-        print("[modifier] func: %s" % ast.dump(node))
+        log.debug("[modifier] func: %s" % ast.dump(node))
         self.in_def_stack.append(self.in_def)
         self.in_def = node.name
         if (
@@ -231,14 +240,14 @@ class Modifier(ast.NodeTransformer):
         return node
 
     def visit_For(self, node):
-        print("[modifier] for: %s" % ast.dump(node))
+        log.debug("[modifier] for: %s" % ast.dump(node))
         self._modify_item(node.target)
         self._modify_item(node.iter)
         self.generic_visit(node)
         return node
 
     def visit_If(self, node):
-        print("[modifier] if: %s" % ast.dump(node))
+        log.debug("[modifier] if: %s" % ast.dump(node))
         if isinstance(node.test, ast.Compare):
             self._modify_item(node.test.left)
         elif isinstance(node.test, ast.UnaryOp):
@@ -253,19 +262,19 @@ class Modifier(ast.NodeTransformer):
         return node
 
     def visit_Print(self, node):
-        print("[modifier] print: %s" % ast.dump(node))
+        log.debug("[modifier] print: %s" % ast.dump(node))
         for value in node.values:
             self._modify_item(value)
 
         return node
 
     def visit_Return(self, node):
-        print("[modifier] return: %s" % ast.dump(node))
+        log.debug("[modifier] return: %s" % ast.dump(node))
         self._modify_item(node.value)
         return node
 
     def visit_While(self, node):
-        print("[modifier] while: %s" % ast.dump(node))
+        log.debug("[modifier] while: %s" % ast.dump(node))
         for value in node.test.values:
             self._modify_item(value)
 
@@ -328,7 +337,6 @@ class Obfuscator:
             return None
 
         node = ast.parse(content)
-        #print ast.dump(node)
         v = Parser(self.config)
         v.visit(node)
         self._append_dict(self.names, v.names)
@@ -355,7 +363,6 @@ class Obfuscator:
     def obfuscate(self):
         idx = 1
         max_len = self._get_names_maxlen(self.name_type_def)
-        print max_len
         bin_len = len(format(max_len, "b"))
         for f in self.name_type_def:
             for name in self.name_type_def[f]:
@@ -368,7 +375,7 @@ class Obfuscator:
                 idx += 1
 
     def modify_file(self, filepath):
-        print("modify_file: %s (%s)" % (self.imported, filepath))
+        log.debug("modify_file: %s (%s)" % (self.imported, filepath))
         if filepath.replace(self.base_dir, '') in self.config["skip_file"]:
             return None
 
@@ -379,7 +386,6 @@ class Obfuscator:
             return None
 
         node = ast.parse(content)
-        #print ast.dump(node)
         m = Modifier(
             self.names,
             self.name_in_module[filepath],
@@ -466,7 +472,7 @@ class Parser(ast.NodeVisitor):
         ast.NodeVisitor.generic_visit(self, node)
 
     def visit_Assign(self, node):
-        print("visit assign: %s" % ast.dump(node))
+        log.debug("visit assign: %s" % ast.dump(node))
         for target in node.targets:
             self._get_assign_name(target)
 
@@ -482,7 +488,7 @@ class Parser(ast.NodeVisitor):
         self.in_def = self.in_def_stack.pop()
 
     def visit_For(self, node):
-        print("visit for: %s" % ast.dump(node))
+        log.debug("visit for: %s" % ast.dump(node))
         self._get_assign_name(node.target)
         ast.NodeVisitor.generic_visit(self, node)
 
@@ -500,17 +506,17 @@ class Parser(ast.NodeVisitor):
         self.in_def = self.in_def_stack.pop()
 
     def visit_Import(self, node):
-        print("[parser] visit import: %s" % ast.dump(node))
+        log.debug("[parser] visit import: %s" % ast.dump(node))
         self._get_import_names(node.names)
         ast.NodeVisitor.generic_visit(self, node)
 
     def visit_ImportFrom(self, node):
-        print("[parser] visit from: %s" % ast.dump(node))
+        log.debug("[parser] visit from: %s" % ast.dump(node))
         self._get_import_names(node.names)
         ast.NodeVisitor.generic_visit(self, node)
 
     def visit_Return(self, node):
-        print("[parser] visit return: %s" % ast.dump(node))
+        log.debug("[parser] visit return: %s" % ast.dump(node))
         ast.NodeVisitor.generic_visit(self, node)
 
 
@@ -532,22 +538,19 @@ if __name__ == '__main__':
                     obf.load_file(filepath)
 
     obf.obfuscate()
-    #print obf.classes
-    #print obf.functions
-    print "names"
-    print obf.names
-    print "name_type_def"
-    print obf.name_type_def
-    print "imported"
-    print obf.imported
-    print "skip_obf_fun_method"
-    print obf.skip_obf_fun_method
+    log.debug("names")
+    log.debug(obf.names)
+    log.debug("name_type_def")
+    log.debug(obf.name_type_def)
+    log.debug("imported")
+    log.debug(obf.imported)
+    log.debug("skip_obf_fun_method")
+    log.debug(obf.skip_obf_fun_method)
+
     if os.path.isfile(obf_path):
         obf.modify_file(obf_path)
     else:
         for dirPath, dirNames, fileNames in os.walk(obf_path):
-            print dirPath
-            print dirNames
             for f in fileNames:
                 fn, ext_fn = os.path.splitext(f)
                 if ext_fn == ".py":
