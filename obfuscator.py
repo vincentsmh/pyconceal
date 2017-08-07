@@ -213,6 +213,12 @@ class Modifier(ast.NodeTransformer):
         self.generic_visit(node)
         return node
 
+    def visit_Delete(self, node):
+        for target in node.targets:
+            self._modify_item(target)
+
+        return node
+
     def visit_Expr(self, node):
         """
         Drop comments
