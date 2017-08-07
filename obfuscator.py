@@ -14,7 +14,9 @@ import ast
 import sys
 import astor
 import logging
+import hashlib
 import ConfigParser
+from base64 import b64encode, b64decode
 
 log = logging.getLogger('myapp')
 hdlr = logging.FileHandler('obf_log')
@@ -23,6 +25,28 @@ hdlr.setFormatter(formatter)
 log.addHandler(hdlr) 
 log.setLevel(logging.DEBUG)
 
+def encrypt_str(text):
+    ascii_list = []
+    ascii_sum = 0
+    for c in text:
+        ord_c = ord(c)
+        ascii_sum += ord_c
+        ascii_list.append(ord_c)
+
+    key = ascii_sum % 128
+    enc_sum = key
+    for i in xrange(0, len(ascii_list)):
+        ascii_list[i] = ascii_list[i] ^ (key >> (i % 4))
+        enc_sum += ascii_list[i]
+
+    key_pos = enc_sum % len(ascii_list)
+    enc_list = []
+    for i in xrange(0, len(ascii_list)):
+        if i == key_pos:
+            enc_list.append(chr(key))
+
+        enc_list.append(chr(ascii_list[i]))
+    return b64encode(''.join(enc_list))
 
 def get_name(item):
     if isinstance(item, ast.Name):
@@ -214,6 +238,7 @@ class Modifier(ast.NodeTransformer):
         return node
 
     def visit_Delete(self, node):
+        log.debug("[modifier] delete: %s" % ast.dump(node))
         for target in node.targets:
             self._modify_item(target)
 
@@ -279,6 +304,16 @@ class Modifier(ast.NodeTransformer):
         self._modify_item(node.value)
         return node
 
+    def visit_Str(self, node):
+        log.debug("[modifier] str: %s" % ast.dump(node))
+        ciphertext = encrypt_str(node.s)
+        decrypt_ast = ast.parse(
+            "%s(\"%s\")" % (
+                self.name_type_def['decrypt_str']['obf'], ciphertext))
+        node = decrypt_ast.body[0].value
+        log.debug("[modifier] after str: %s" % ast.dump(node))
+        return node
+
     def visit_While(self, node):
         log.debug("[modifier] while: %s" % ast.dump(node))
         for value in node.test.values:
@@ -313,7 +348,11 @@ class Obfuscator:
         #     }, {...}
         # }
         self.name_type_def = {}
+        self._name_len = 0
         self.config = self._get_config()
+        
+        # Load decrypt_str function
+        self._decrypt_str_ast = self._parse_file_ast("decrypt_str.py").body[0]
 
     def _append_dict(self, target, source):
         for item in source:
@@ -332,7 +371,24 @@ class Obfuscator:
         
         return config
 
-    def load_file(self, filepath):
+    def _get_namelen_bin(self):
+        return len(format(self._name_len, "b"))
+
+    def _insert_func(self, node):
+        i = 0
+        for item in node.body:
+            if(
+                isinstance(item, ast.FunctionDef) or \
+                isinstance(item, ast.ClassDef)
+            ):
+                break
+
+            i += 1
+
+        node.body.insert(i, self._decrypt_str_ast)
+        return node
+
+    def _parse_file_ast(self, filepath):
         if filepath.replace(self.base_dir, '') in self.config["skip_file"]:
             return None
 
@@ -342,7 +398,15 @@ class Obfuscator:
         if len(content) == 0:
             return None
 
-        node = ast.parse(content)
+        return ast.parse(content)
+
+    def load_file(self, filepath):
+        node = self._parse_file_ast(filepath)
+        if node is None:
+            return None
+
+        node = self._insert_func(node)
+        log.debug("node: %s" % ast.dump(node))
         v = Parser(self.config)
         v.visit(node)
         self._append_dict(self.names, v.names)
@@ -359,7 +423,7 @@ class Obfuscator:
         self.name_in_module[filepath] = v.names
         self.name_type_def[filepath] = v.name_type_def
 
-    def _get_names_maxlen(self, name_type_def):
+    def _get_namelen(self, name_type_def):
         max_len = 0
         for f in name_type_def:
             max_len += len(name_type_def[f])
@@ -368,8 +432,8 @@ class Obfuscator:
 
     def obfuscate(self):
         idx = 1
-        max_len = self._get_names_maxlen(self.name_type_def)
-        bin_len = len(format(max_len, "b"))
+        self._name_len = self._get_namelen(self.name_type_def)
+        bin_len = len(format(self._name_len, "b"))
         for f in self.name_type_def:
             for name in self.name_type_def[f]:
                 self.name_type_def[f][name]['obf'] = format(
@@ -392,6 +456,7 @@ class Obfuscator:
             return None
 
         node = ast.parse(content)
+        node = self._insert_func(node)
         m = Modifier(
             self.names,
             self.name_in_module[filepath],
@@ -524,7 +589,6 @@ class Parser(ast.NodeVisitor):
     def visit_Return(self, node):
         log.debug("[parser] visit return: %s" % ast.dump(node))
         ast.NodeVisitor.generic_visit(self, node)
-
 
 if __name__ == '__main__':
     if len(sys.argv) <= 1:
