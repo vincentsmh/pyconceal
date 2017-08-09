@@ -393,17 +393,11 @@ class Obfuscator:
         return len(format(self._name_len, "b"))
 
     def _insert_func(self, node):
-        i = 0
-        for item in node.body:
-            if(
-                isinstance(item, ast.FunctionDef) or \
-                isinstance(item, ast.ClassDef)
-            ):
-                break
-
-            i += 1
-
-        node.body.insert(i, self._decrypt_str_ast)
+        """
+        This inserts our function to the obfuscating codes for some specific
+        perpose, like string decryption.
+        """
+        node.body.insert(0, self._decrypt_str_ast)
         return node
 
     def _parse_file_ast(self, filepath):
