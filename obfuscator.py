@@ -33,6 +33,9 @@ def encrypt_str(text):
         ascii_sum += ord_c
         ascii_list.append(ord_c)
 
+    if len(ascii_list) == 0:
+        return None
+
     key = ascii_sum % 128
     enc_sum = key
     for i in xrange(0, len(ascii_list)):
@@ -78,57 +81,76 @@ class Modifier(ast.NodeTransformer):
         self.in_file = in_file
         super(Modifier, self).__init__()
 
+    def _check_n_encrypt_str(self, node):
+        if not isinstance(node, ast.Str):
+            return None
+
+        ciphertext = encrypt_str(node.s)
+        decrypt_ast = ast.parse(
+            "%s(\"%s\")" % (
+                self.name_type_def['decrypt_str']['obf'], ciphertext
+            )
+        )
+        return decrypt_ast.body[0].value
+        
     def _modify_func_args(self, args):
         for arg in args:
             if isinstance(arg, ast.Name):
                 self._modify_name(arg, 'arg')
 
-    def _modify_item(self, item, t=None):
+    def _modify_node(self, node, attribute, t=None):
+        encrypted_str = self._check_n_encrypt_str(getattr(node, attribute))
+        if encrypted_str is not None:
+            setattr(node, attribute, encrypted_str)
+        else:
+            self._modify_node_attr(getattr(node, attribute), t)
+
+    def _modify_node_attr(self, item, t=None):
         if isinstance(item, ast.Name):
             self._modify_name(item, t)
         elif isinstance(item, ast.Attribute):
             self._modify_attr(item, t)
         elif isinstance(item, ast.BinOp):
-            self._modify_item(item.left, t)
-            self._modify_item(item.right, t)
+            self._modify_node_attr(item.left, t)
+            self._modify_node_attr(item.right, t)
         elif isinstance(item, ast.Call):
             self._modify_call(item)
         elif isinstance(item, ast.Compare):
-            self._modify_item(item.left, t)
+            self._modify_node_attr(item.left, t)
             for comparator in item.comparators:
-                self._modify_item(comparator)
+                self._modify_node_attr(comparator)
         elif isinstance(item, ast.comprehension):
-            self._modify_item(item.target)
-            self._modify_item(item.iter)
+            self._modify_node_attr(item.target)
+            self._modify_node_attr(item.iter)
         elif isinstance(item, ast.Dict):
             for key in item.keys:
-                self._modify_item(key)
+                self._modify_node_attr(key)
 
             for value in item.values:
-                self._modify_item(value)
+                self._modify_node_attr(value)
         elif isinstance(item, ast.ExtSlice):
             for dim in item.dims:
-                self._modify_item(dim)
+                self._modify_node_attr(dim)
         elif isinstance(item, ast.Index):
-            self._modify_item(item.value)
+            self._modify_node_attr(item.value)
         elif isinstance(item, ast.List):
             for elt in item.elts:
-                self._modify_item(elt)
+                self._modify_node_attr(elt)
         elif isinstance(item, ast.ListComp):
-            self._modify_item(item.elt, t)
+            self._modify_node_attr(item.elt, t)
             for gen in item.generators:
-                self._modify_item(gen, t)
+                self._modify_node_attr(gen, t)
         elif isinstance(item, ast.Tuple):
             for elt in item.elts:
-                self._modify_item(elt, t)
+                self._modify_node_attr(elt, t)
         elif isinstance(item, ast.Slice):
-            self._modify_item(item.lower, t)
-            self._modify_item(item.upper, t)
+            self._modify_node_attr(item.lower, t)
+            self._modify_node_attr(item.upper, t)
         elif isinstance(item, ast.Subscript):
-            self._modify_item(item.value)
-            self._modify_item(item.slice)
+            self._modify_node_attr(item.value)
+            self._modify_node_attr(item.slice)
         elif isinstance(item, ast.UnaryOp):
-            self._modify_item(item.operand)
+            self._modify_node_attr(item.operand)
 
     def _modify_attr_attr(self, func_name, attr):
         if (
@@ -152,27 +174,27 @@ class Modifier(ast.NodeTransformer):
                 return None
 
             if attr_name != "self":
-                self._modify_item(attr.value, t)
+                self._modify_node_attr(attr.value, t)
 
             self._modify_attr_attr(attr_name, attr)
         else:
             self._modify_attr_attr(attr_name, attr)
-            self._modify_item(attr.value, t)
+            self._modify_node_attr(attr.value, t)
         
     def _modify_call(self, node):
-        self._modify_item(node.func, 'func')
+        self._modify_node_attr(node.func, 'func')
         self._modify_call_args(node.args)
         self._modify_call_keywords(node.keywords)
 
     def _modify_call_args(self, args):
         for arg in args:
-            self._modify_item(arg, 'var')
-            self._modify_item(arg, 'arg')
-            self._modify_item(arg, 'func')
+            self._modify_node_attr(arg, 'var')
+            self._modify_node_attr(arg, 'arg')
+            self._modify_node_attr(arg, 'func')
 
     def _modify_call_keywords(self, keywords):
         for keyword in keywords:
-            self._modify_item(keyword.value)
+            self._modify_node_attr(keyword.value)
 
     def _modify_name(self, name, t):
         if not isinstance(name, ast.Name):
@@ -203,15 +225,16 @@ class Modifier(ast.NodeTransformer):
     def visit_Assign(self, node):
         log.debug("[modifier] assign: %s" % ast.dump(node))
         for target in node.targets:
-            self._modify_item(target, 'var')
+            self._modify_node_attr(target, 'var')
 
-        self._modify_item(node.value)
+        self._modify_node(node, 'value')
+        log.debug("[modifier] after assign: %s" % ast.dump(node))
         return node
 
     def visit_AugAssign(self, node):
         log.debug("[modifier] augassign: %s" % ast.dump(node))
-        self._modify_item(node.target)
-        self._modify_item(node.value)
+        self._modify_node_attr(node.target)
+        self._modify_node_attr(node.value)
         return node
 
     def visit_Call(self, node):
@@ -240,7 +263,7 @@ class Modifier(ast.NodeTransformer):
     def visit_Delete(self, node):
         log.debug("[modifier] delete: %s" % ast.dump(node))
         for target in node.targets:
-            self._modify_item(target)
+            self._modify_node_attr(target)
 
         return node
 
@@ -272,22 +295,22 @@ class Modifier(ast.NodeTransformer):
 
     def visit_For(self, node):
         log.debug("[modifier] for: %s" % ast.dump(node))
-        self._modify_item(node.target)
-        self._modify_item(node.iter)
+        self._modify_node_attr(node.target)
+        self._modify_node_attr(node.iter)
         self.generic_visit(node)
         return node
 
     def visit_If(self, node):
         log.debug("[modifier] if: %s" % ast.dump(node))
         if isinstance(node.test, ast.Compare):
-            self._modify_item(node.test.left)
+            self._modify_node_attr(node.test.left)
         elif isinstance(node.test, ast.UnaryOp):
-            self._modify_item(node.test.operand)
+            self._modify_node_attr(node.test.operand)
         elif isinstance(node.test, ast.BoolOp):
             for value in node.test.values:
-                self._modify_item(value)
+                self._modify_node_attr(value)
         else:
-            self._modify_item(node.test)
+            self._modify_node_attr(node.test)
 
         self.generic_visit(node)
         return node
@@ -295,29 +318,24 @@ class Modifier(ast.NodeTransformer):
     def visit_Print(self, node):
         log.debug("[modifier] print: %s" % ast.dump(node))
         for value in node.values:
-            self._modify_item(value)
+            self._modify_node_attr(value)
 
         return node
 
     def visit_Return(self, node):
         log.debug("[modifier] return: %s" % ast.dump(node))
-        self._modify_item(node.value)
+        self._modify_node_attr(node.value)
         return node
 
     def visit_Str(self, node):
         log.debug("[modifier] str: %s" % ast.dump(node))
-        ciphertext = encrypt_str(node.s)
-        decrypt_ast = ast.parse(
-            "%s(\"%s\")" % (
-                self.name_type_def['decrypt_str']['obf'], ciphertext))
-        node = decrypt_ast.body[0].value
-        log.debug("[modifier] after str: %s" % ast.dump(node))
+        node = self._check_n_encrypt_str(node)
         return node
 
     def visit_While(self, node):
         log.debug("[modifier] while: %s" % ast.dump(node))
         for value in node.test.values:
-            self._modify_item(value)
+            self._modify_node_attr(value)
 
         self.generic_visit(node)
         return node
