@@ -1,12 +1,11 @@
 ###
 #
-# This tool provides the following operations:
-#   1. Defined classes name
-#   2. Defined function name
-#   3. Called classes name
-#   4. Called function name
+# This tool provides the following operstions:
+#   1. Obfuscate defined classes name
+#   2. Obfuscate defined function name
 #   5. Remove comments
-#   6. Variables
+#   6. Obfuscate variables
+#   7. Encrypt strings
 #
 ###
 import os
@@ -81,10 +80,7 @@ class Modifier(ast.NodeTransformer):
         self.in_file = in_file
         super(Modifier, self).__init__()
 
-    def _check_n_encrypt_str(self, node):
-        if not isinstance(node, ast.Str):
-            return None
-
+    def _encrypt_str_ast(self, node):
         ciphertext = encrypt_str(node.s)
         decrypt_ast = ast.parse(
             "%s(\"%s\")" % (
@@ -99,11 +95,19 @@ class Modifier(ast.NodeTransformer):
                 self._modify_name(arg, 'arg')
 
     def _modify_node(self, node, attribute, t=None):
-        encrypted_str = self._check_n_encrypt_str(getattr(node, attribute))
-        if encrypted_str is not None:
-            setattr(node, attribute, encrypted_str)
+        attr = getattr(node, attribute)
+        if isinstance(attr, list):
+            for i in xrange(0, len(attr)):
+                if isinstance(attr[i], ast.Str):
+                    attr[i] = self._encrypt_str_ast(attr[i])
+                    setattr(node, attribute, attr)
+                else:
+                    self._modify_node_attr(attr[i], t)
         else:
-            self._modify_node_attr(getattr(node, attribute), t)
+            if isinstance(attr, ast.Str):
+                setattr(node, attribute, self._encrypt_str_ast(attr))
+            else:
+                self._modify_node_attr(attr, t)
 
     def _modify_node_attr(self, item, t=None):
         if isinstance(item, ast.Name):
@@ -111,17 +115,17 @@ class Modifier(ast.NodeTransformer):
         elif isinstance(item, ast.Attribute):
             self._modify_attr(item, t)
         elif isinstance(item, ast.BinOp):
-            self._modify_node_attr(item.left, t)
-            self._modify_node_attr(item.right, t)
+            self._modify_node(item, "left", t)
+            self._modify_node(item, "right", t)
         elif isinstance(item, ast.Call):
             self._modify_call(item)
         elif isinstance(item, ast.Compare):
-            self._modify_node_attr(item.left, t)
+            self._modify_node(item, "left", t)
             for comparator in item.comparators:
                 self._modify_node_attr(comparator)
         elif isinstance(item, ast.comprehension):
-            self._modify_node_attr(item.target)
-            self._modify_node_attr(item.iter)
+            self._modify_node(item, "target")
+            self._modify_node(item, "iter")
         elif isinstance(item, ast.Dict):
             for key in item.keys:
                 self._modify_node_attr(key)
@@ -134,8 +138,7 @@ class Modifier(ast.NodeTransformer):
         elif isinstance(item, ast.Index):
             self._modify_node_attr(item.value)
         elif isinstance(item, ast.List):
-            for elt in item.elts:
-                self._modify_node_attr(elt)
+            self._modify_node(item, "elts")
         elif isinstance(item, ast.ListComp):
             self._modify_node_attr(item.elt, t)
             for gen in item.generators:
@@ -183,18 +186,12 @@ class Modifier(ast.NodeTransformer):
         
     def _modify_call(self, node):
         self._modify_node_attr(node.func, 'func')
-        self._modify_call_args(node.args)
+        self._modify_node(node, "args")
         self._modify_call_keywords(node.keywords)
-
-    def _modify_call_args(self, args):
-        for arg in args:
-            self._modify_node_attr(arg, 'var')
-            self._modify_node_attr(arg, 'arg')
-            self._modify_node_attr(arg, 'func')
 
     def _modify_call_keywords(self, keywords):
         for keyword in keywords:
-            self._modify_node_attr(keyword.value)
+            self._modify_node(keyword, "value")
 
     def _modify_name(self, name, t):
         if not isinstance(name, ast.Name):
@@ -317,9 +314,8 @@ class Modifier(ast.NodeTransformer):
 
     def visit_Print(self, node):
         log.debug("[modifier] print: %s" % ast.dump(node))
-        for value in node.values:
-            self._modify_node_attr(value)
-
+        self._modify_node(node, "values")
+        log.debug("[modifier] after print: %s" % ast.dump(node))
         return node
 
     def visit_Return(self, node):
@@ -329,7 +325,7 @@ class Modifier(ast.NodeTransformer):
 
     def visit_Str(self, node):
         log.debug("[modifier] str: %s" % ast.dump(node))
-        node = self._check_n_encrypt_str(node)
+        node = self._encrypt_str_ast(node)
         return node
 
     def visit_While(self, node):
@@ -620,14 +616,6 @@ if __name__ == '__main__':
                     obf.load_file(filepath)
 
     obf.obfuscate()
-    log.debug("names")
-    log.debug(obf.names)
-    log.debug("name_type_def")
-    log.debug(obf.name_type_def)
-    log.debug("imported")
-    log.debug(obf.imported)
-    log.debug("skip_obf_fun_method")
-    log.debug(obf.skip_obf_fun_method)
 
     if os.path.isfile(obf_path):
         obf.modify_file(obf_path)
