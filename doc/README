@@ -6,7 +6,7 @@ How to Use
 Assume your python source codes are located in /path/your/codes
 Go into the pyconceal folder and do
 
-  $ ./obfuscator /path/your/codes > log
+  $ ./obfuscator [path to folder | file]
 
 
 Configuration
